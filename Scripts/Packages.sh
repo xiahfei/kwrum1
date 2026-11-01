@@ -72,12 +72,12 @@ UPDATE_PACKAGE() {
 
 # 默认主题：aurora（Settings.sh 里的 WRT_THEME=aurora 要与之对应）
 UPDATE_PACKAGE "aurora" "eamonxg/luci-theme-aurora" "master"
-UPDATE_PACKAGE "aurora-config" "eamonxg/luci-app-aurora-config" "master"
+#UPDATE_PACKAGE "aurora-config" "eamonxg/luci-app-aurora-config" "master"
 
 # Honk core + LuCI/Doona UI. One branch for every target: `main` carries the
 # ebpf datapath handover (ci/patches/honk-direct-unspec.py -> core-p1 assets +
 # the direct-unspec marker), nfqueue disabled and the .lan/.local DNS rule.
-UPDATE_PACKAGE "honk" "kwrum1/openwrt-honk" "main" "pkg"
+#UPDATE_PACKAGE "honk" "kwrum1/openwrt-honk" "main" "pkg"
 
 # honk/ 下三个 generated-* 文件都被 .gitignore 忽略，由 openwrt-honk 的 release.yml
 # 作为 asset 发布。缺任何一个都会在编译/打包阶段失败：
