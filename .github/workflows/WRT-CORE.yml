@@ -1,0 +1,377 @@
+# SPDX-License-Identifier: MIT
+# Copyright (C) 2026 kwrum1
+#
+# WRT-CORE: reusable build core, called by OWRT-ALL.
+#
+# Differences from the upstream template this started as:
+#   * no upstream-specific platform branches (qualcommax/mediatek);
+#     the only configs that exist are Config/X86.txt, Config/ROCKCHIP.txt and
+#     the shared Config/GENERAL.txt
+#   * every build records provenance (source commit, dpd ABI, BPF object hash,
+#     toolchain versions) into the release - see docs/ in the source repo
+#   * the release body names the datapath commit and the object hash, so an
+#     image can always be traced back to the exact eBPF object it ships
+
+name: WRT-CORE
+
+on:
+  workflow_call:
+    inputs:
+      WRT_CONFIG:
+        required: true
+        type: string
+      WRT_THEME:
+        required: true
+        type: string
+      WRT_NAME:
+        required: true
+        type: string
+      WRT_SSID:
+        required: true
+        type: string
+      WRT_WORD:
+        required: true
+        type: string
+      WRT_IP:
+        required: true
+        type: string
+      WRT_PW:
+        required: true
+        type: string
+      WRT_REPO:
+        required: true
+        type: string
+      WRT_BRANCH:
+        required: true
+        type: string
+      WRT_SOURCE:
+        required: true
+        type: string
+      WRT_PACKAGE:
+        required: false
+        type: string
+      WRT_TEST:
+        required: false
+        type: string
+
+env:
+  GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+  WRT_CONFIG: ${{ inputs.WRT_CONFIG }}
+  WRT_THEME: ${{ inputs.WRT_THEME }}
+  WRT_NAME: ${{ inputs.WRT_NAME }}
+  WRT_SSID: ${{ inputs.WRT_SSID }}
+  WRT_WORD: ${{ inputs.WRT_WORD }}
+  WRT_IP: ${{ inputs.WRT_IP }}
+  WRT_PW: ${{ inputs.WRT_PW }}
+  WRT_REPO: ${{ inputs.WRT_REPO }}
+  WRT_BRANCH: ${{ inputs.WRT_BRANCH }}
+  WRT_SOURCE: ${{ inputs.WRT_SOURCE }}
+  WRT_PACKAGE: ${{ inputs.WRT_PACKAGE }}
+  WRT_TEST: ${{ inputs.WRT_TEST }}
+
+jobs:
+  core:
+    name: ${{ inputs.WRT_SOURCE }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Projects
+        uses: actions/checkout@main
+
+      - name: Initialization Environment
+        env:
+          DEBIAN_FRONTEND: noninteractive
+        run: |
+          sudo -E apt-get -yqq update
+          sudo -E apt-get -yqq install dos2unix libfuse-dev
+          sudo bash -c 'bash <(curl -sL https://build-scripts.immortalwrt.org/init_build_environment.sh)'
+          sudo -E systemctl daemon-reload
+          sudo -E timedatectl set-timezone "Asia/Shanghai"
+
+          sudo mkdir -p /mnt/build_wrt
+          sudo chown $USER:$USER /mnt/build_wrt
+          sudo ln -s /mnt/build_wrt $GITHUB_WORKSPACE/wrt
+
+      - name: Initialization Values
+        run: |
+          echo "WRT_DATE=$(TZ=UTC-8 date +"%y.%m.%d-%H.%M.%S")" >> $GITHUB_ENV
+          echo "WRT_MARK=${GITHUB_REPOSITORY%%/*}" >> $GITHUB_ENV
+          echo "WRT_INFO=${WRT_SOURCE%%/*}" >> $GITHUB_ENV
+          echo "WRT_TARGET=$(grep -m 1 -oP '^CONFIG_TARGET_\K[\w]+(?=\=y)' ./Config/$WRT_CONFIG.txt)" >> $GITHUB_ENV
+          echo "WRT_KVER=none" >> $GITHUB_ENV
+          echo "WRT_LIST=none" >> $GITHUB_ENV
+          echo "WRT_PROV=none" >> $GITHUB_ENV
+          echo "WRT_PROV_LINE=数据面：未生成（config-only 运行）" >> $GITHUB_ENV
+
+      - name: Clone Code
+        run: |
+          git clone --depth=1 --single-branch --branch $WRT_BRANCH $WRT_REPO ./wrt/
+
+          # One `cd`, three writes: `cd ./wrt/ && echo ...` on every line fails
+          # after the first one (cwd is already ./wrt), which used to leave
+          # WRT_HASH_FULL / WRT_HASH_DATE undefined in the provenance file.
+          cd ./wrt/
+          {
+            echo "WRT_HASH=$(git log -1 --pretty=format:'%h')"
+            echo "WRT_HASH_FULL=$(git log -1 --pretty=format:'%H')"
+            echo "WRT_HASH_DATE=$(git log -1 --pretty=format:'%cI')"
+          } >> "$GITHUB_ENV"
+
+          # GitHub Action 移除国内下载源
+          PROJECT_MIRRORS_FILE="./scripts/projectsmirrors.json"
+          if [ -f "$PROJECT_MIRRORS_FILE" ]; then
+            sed -i '/.cn\//d; /tencent/d; /aliyun/d' "$PROJECT_MIRRORS_FILE"
+          fi
+
+          # The datapath that will actually be compiled: fail now, not 90 minutes
+          # later, if the source tree lost it. Only the eBPF targets ship it;
+          # IPQ/MTK build the stock package set (this repo's ebpf/ is not installed).
+          if [ "$WRT_CONFIG" = "X86" ] || [ "$WRT_CONFIG" = "ROCKCHIP" ]; then
+            test -d "$GITHUB_WORKSPACE/ebpf/router-dataplane/src" || {
+              echo "!! this repository has no ebpf/router-dataplane/src" >&2
+              exit 1
+            }
+          fi
+
+      - name: Check Scripts
+        run: |
+          find ./ -maxdepth 3 -type f -iregex ".*\(txt\|sh\)$" -exec dos2unix {} \; -exec chmod +x {} \;
+
+      - name: Check Caches
+        id: check-cache
+        if: env.WRT_TEST != 'true'
+        uses: actions/cache@main
+        with:
+          # The branch is part of the key: QCA-PPE and QCA-NSS both build
+          # IPQ60XX/IPQ807X (only the branch differs) and run at the same time
+          # after Auto-Clean. Without it they restore each other's toolchain and
+          # then delete the same cache ids.
+          key: ${{env.WRT_CONFIG}}-${{env.WRT_INFO}}-${{env.WRT_BRANCH}}-${{env.WRT_HASH}}
+          restore-keys: ${{env.WRT_CONFIG}}-${{env.WRT_INFO}}-${{env.WRT_BRANCH}}
+          path: |
+            ./wrt/.ccache
+            ./wrt/staging_dir/host*
+            ./wrt/staging_dir/tool*
+
+      - name: Update Caches
+        if: env.WRT_TEST != 'true'
+        run: |
+          if [ -d "./wrt/staging_dir" ]; then
+            find "./wrt/staging_dir" -type d -name "stamp" -not -path "*target*" | while read -r DIR; do
+              find "$DIR" -type f -exec touch {} +
+            done
+
+            mkdir -p ./wrt/tmp && echo "1" > ./wrt/tmp/.build
+
+            echo "toolchain skipped!"
+          else
+            echo "caches missed!"
+          fi
+
+          if ${{steps.check-cache.outputs.cache-hit != 'true'}}; then
+            # Drop stale caches for this config *and branch*. Two workflows run at
+            # the same time after Auto-Clean (QCA-PPE on owrt, QCA-NSS on main)
+            # and share the config name; without the branch they list -- and then
+            # delete -- the same ids, and the loser of that race died here with
+            # "Could not find a cache matching <id>". Deletion is best-effort.
+            gh cache list --key "$WRT_CONFIG-$WRT_INFO-$WRT_BRANCH" --json id --jq '.[].id' 2>/dev/null |
+              while read -r CACHE_ID; do
+                gh cache delete "$CACHE_ID" >/dev/null 2>&1 || true
+              done
+            echo "caches cleanup done!"
+          fi
+
+      - name: Update Feeds
+        run: |
+          cd ./wrt/
+
+          ./scripts/feeds update -a
+          ./scripts/feeds install -a
+
+      - name: Custom Packages
+        run: |
+          cd ./wrt/package/
+
+          $GITHUB_WORKSPACE/Scripts/Packages.sh
+          $GITHUB_WORKSPACE/Scripts/Handles.sh
+
+      - name: Custom Settings
+        run: |
+          cd ./wrt/
+
+          # .config is generated by Settings.sh only:
+          #   X86 / ROCKCHIP -> Config/<CONFIG>.txt + Config/GENERAL.txt
+          #   *TEST*         -> Config/<TEST>.txt alone
+          $GITHUB_WORKSPACE/Scripts/Settings.sh
+
+          make defconfig -j$(nproc) && make clean -j$(nproc)
+
+          # What the fragment actually resolved to. Cheap, and the only way to
+          # tell from the log which hostapd/wpad variant a target ended up with
+          # (a missing CONFIG_DRIVER_11AX_SUPPORT breaks the full-openssl build).
+          echo "== resolved config =="
+          grep -E '^CONFIG_TARGET_(BOARD|SUBTARGET|PROFILE)=|^CONFIG_DRIVER_11(AX|BE)_SUPPORT|^CONFIG_PACKAGE_wpad[-a-z0-9]*=y|^CONFIG_PACKAGE_kmod-ath12k=y|^CONFIG_DEFAULT_wpad' .config || true
+
+          # ViKingYFY's hostapd patch 900-hostapd-update-muedca-params.patch uses
+          # struct hostapd_config.he_mu_edca, a member that only exists with
+          # CONFIG_IEEE80211AX (hostapd Makefile: CONFIG_DRIVER_11AX_SUPPORT).
+          # The qualcommbe targets do not get that support symbol, so the patch
+          # cannot compile there ("has no member named 'he_mu_edca'") and the
+          # image dies 90 minutes later inside hostapd. Without AX the patch is a
+          # no-op anyway, so drop it for this build instead.
+          if ! grep -q '^CONFIG_DRIVER_11AX_SUPPORT=y' .config; then
+            echo "11AX support is off -> dropping hostapd MU-EDCA patch (needs CONFIG_IEEE80211AX)"
+            rm -f package/network/services/hostapd/patches/900-hostapd-update-muedca-params.patch
+          fi
+
+          # qualcommbe: show why kmod-ath12k is (or is not) selectable, so a
+          # missing dependency is visible here instead of at image assembly.
+          if grep -q '^CONFIG_TARGET_BOARD="qualcommbe"' .config 2>/dev/null; then
+            echo "== kmod-ath12k =="
+            grep -B1 -A14 '^[[:space:]]*config PACKAGE_kmod-ath12k$' tmp/.config-package.in | head -20
+            grep -E '^CONFIG_PACKAGE_kmod-(ath|mac80211)' .config || echo "  (no ath/mac80211 kmod selected)"
+          fi
+
+      - name: Download Packages
+        if: env.WRT_TEST != 'true'
+        run: |
+          cd ./wrt/
+
+          make download -j$(nproc)
+
+      - name: Compile Firmware
+        if: env.WRT_TEST != 'true'
+        run: |
+          cd ./wrt/
+
+          make -j$(nproc) || make -j1 V=s
+
+      - name: Machine Information
+        run: |
+          cd ./wrt/
+
+          # Hash the compiled datapath *now*: `make clean` in the next step
+          # removes build_dir, and the provenance step would otherwise always
+          # record sha256=none.
+          OBJ=$(find ./build_dir -name 'dpd_fastpath.bpf.o' -type f 2>/dev/null | head -1)
+          {
+            echo "WRT_OBJ_SHA=$( [ -n "$OBJ" ] && sha256sum "$OBJ" | cut -d' ' -f1 || echo none )"
+            echo "WRT_OBJ_SIZE=$( [ -n "$OBJ" ] && stat -c %s "$OBJ" || echo 0 )"
+          } >> "$GITHUB_ENV"
+
+          echo "======================="
+          lscpu | grep -E "name|Core|Thread"
+          echo "======================="
+          df -h
+          echo "======================="
+          du -h --max-depth=1
+          echo "======================="
+
+      - name: Package Firmware
+        run: |
+          cd ./wrt/ && mkdir ./upload/
+
+          cp -f ./.config ./upload/Config-"$WRT_CONFIG"-"$WRT_INFO"-"$WRT_BRANCH"-"$WRT_DATE".txt
+
+          if [[ $WRT_TEST != 'true' ]]; then
+            echo "WRT_KVER=$(find ./bin/targets/ -type f -name "*.manifest" -exec grep -oP '^kernel - \K[\d\.]+' {} \;)" >> $GITHUB_ENV
+            echo "WRT_LIST=$(find ./bin/targets/ -type f -name "*.manifest" -exec grep -oP '^luci-(app|theme)[^ ]*' {} \; | tr '\n' ' ')" >> $GITHUB_ENV
+
+            find ./bin/targets/ -iregex ".*\(buildinfo\|json\|sha256sums\|packages\)$" -exec rm -rf {} + || true
+
+            for FILE in $(find ./bin/targets/ -type f -iname "*$WRT_TARGET*") ; do
+              EXT=$(basename $FILE | cut -d '.' -f 2-)
+              NAME=$(basename $FILE | cut -d '.' -f 1 | grep -io "\($WRT_TARGET\).*")
+              NEW_FILE="$NAME"-"$WRT_INFO"-"$WRT_BRANCH"-"$WRT_DATE"."$EXT"
+              mv -f $FILE ./upload/$NEW_FILE
+            done
+
+            find ./bin/targets/ -type f -exec mv -f {} ./upload/ \; || true
+
+            make clean -j$(nproc)
+          fi
+
+      - name: Build Provenance
+        run: |
+          cd ./wrt/
+
+          ABI=$(grep -oP '^#define DPD_ABI_VERSION\s+\K[0-9]+' "$GITHUB_WORKSPACE/ebpf/router-dataplane/src/dpd_common.h" 2>/dev/null || echo "unknown")
+          # The object was hashed before `make clean` (Machine Information step);
+          # looking for it here would always find nothing.
+          OBJ_SHA="${WRT_OBJ_SHA:-none}"
+          OBJ_SIZE="${WRT_OBJ_SIZE:-0}"
+          SRC_SHA=$(cd "$GITHUB_WORKSPACE/ebpf" && find . -type f -name '*.c' -o -type f -name '*.h' | sort | xargs sha256sum 2>/dev/null | sha256sum | cut -d' ' -f1)
+          CLANG_VER=$(clang --version | head -1)
+          LIBBPF_VER=$(pkg-config --modversion libbpf 2>/dev/null || echo "unknown")
+          # Which einat asset (and therefore which perf patch level) is inside
+          # this image. PKG_VERSION cannot carry it: apk rejects a dash in the
+          # version string.
+          EINAT_BIN=$(sed -n 's|^[[:space:]]*EINAT_ASSET:=\(einat-[^[:space:]]*\)|\1|p' "$GITHUB_WORKSPACE/ebpf/einat-ebpf/Makefile" 2>/dev/null | head -1)
+
+          {
+            echo "config        $WRT_CONFIG"
+            echo "source        $WRT_SOURCE"
+            echo "branch        $WRT_BRANCH"
+            echo "commit        $WRT_HASH"
+            echo "commit_full   $WRT_HASH_FULL"
+            echo "commit_date   $WRT_HASH_DATE"
+            echo "target        $WRT_TARGET"
+            echo "kernel        $WRT_KVER"
+            echo "ebpf_abi      $ABI"
+            echo "ebpf_object   sha256=$OBJ_SHA size=$OBJ_SIZE"
+            echo "ebpf_src_tree sha256=$SRC_SHA"
+            echo "einat_bin     ${EINAT_BIN:-none}"
+            echo "clang         $CLANG_VER"
+            echo "libbpf        $LIBBPF_VER"
+            echo "built_at      $(date -u +%Y-%m-%dT%H:%M:%SZ)"
+          } | tee ./upload/provenance-"$WRT_CONFIG".txt
+
+          echo "WRT_PROV=abi=$ABI object=${OBJ_SHA:0:16} src=$WRT_HASH" >> $GITHUB_ENV
+          # One line for the release body. Decide it from the *target*, not from
+          # whether an object happened to be found: X86/ROCKCHIP always ship the
+          # eBPF layer, the other targets accelerate in the vendor path.
+          case "$WRT_CONFIG" in
+          X86 | ROCKCHIP)
+            echo "WRT_PROV_LINE=eBPF 数据面：abi=$ABI object=${OBJ_SHA:0:16} src=$WRT_HASH" >> $GITHUB_ENV
+            ;;
+          *)
+            echo "WRT_PROV_LINE=数据面：平台原厂（PPE/NSS），本镜像不含 ebpf/ 层" >> $GITHUB_ENV
+            ;;
+          esac
+
+      - name: Upload Provenance
+        if: env.WRT_TEST != 'true'
+        uses: actions/upload-artifact@main
+        with:
+          name: provenance-${{env.WRT_CONFIG}}
+          path: ./wrt/upload/provenance-*.txt
+
+      - name: Release Firmware
+        if: env.WRT_TEST != 'true'
+        uses: softprops/action-gh-release@master
+        with:
+          tag_name: ${{env.WRT_CONFIG}}-${{env.WRT_INFO}}-${{env.WRT_BRANCH}}-${{env.WRT_DATE}}
+          files: ./wrt/upload/*
+          body: |
+            平台固件包，内含多个设备，请选择需要的设备固件。
+
+            源码：${{env.WRT_REPO}}
+            分支：${{env.WRT_BRANCH}}
+            提交：${{env.WRT_HASH}}
+
+            配置：${{env.WRT_CONFIG}}
+            平台：${{env.WRT_TARGET}}
+
+            ${{env.WRT_PROV_LINE}}
+
+            登录地址：${{env.WRT_IP}}
+            登录密码：${{env.WRT_PW}}
+
+            WIFI名称：${{env.WRT_SSID}}
+            WIFI密码：${{env.WRT_WORD}}
+
+            内核版本：${{env.WRT_KVER}}
+            插件列表：${{env.WRT_LIST}}
+
+            每个 release 都带 provenance-<CONFIG>.txt：固件源提交、配置、内核、
+            clang/libbpf 版本；X86/ROCKCHIP 另含 eBPF ABI、BPF 对象哈希与体积、
+            ebpf/ 源码树哈希。

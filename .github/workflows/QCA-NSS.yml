@@ -1,0 +1,64 @@
+# SPDX-License-Identifier: MIT
+# Copyright (C) 2026 kwrum1
+#
+# QCA-NSS: the NSS-firmware build of every supported Qualcomm target.
+#
+# Source: VIKINGYFY/immortalwrt@main (NSS firmware branch).
+#
+# This is the *same device list as QCA-PPE* plus the platform that only exists
+# on this branch:
+#
+#   IPQ60XX / IPQ807x   both flavours: owrt (PPE, QCA-PPE) and main (NSS, here)
+#   IPQ95xx             main only: `main` ships just the ipq95xx subtarget on
+#                       qualcommbe (owrt has ipq53xx too, and no ipq95xx-only
+#                       config of its own -- IPQ53xx is built by QCA-PPE).
+#
+# Configs are upstream's own Config/*.txt files.
+
+name: QCA-NSS
+
+on:
+  # 自动编译：Auto-Clean 跑完后（与上游一致的“清理 -> 编译”链）
+  workflow_run:
+    workflows: ["Auto-Clean"]
+    types:
+      - completed
+  # 手动编译
+  workflow_dispatch:
+    inputs:
+      PACKAGE:
+        description: 'Extra package lines for .config'
+        required: false
+        type: string
+      TEST:
+        description: 'Config-only run (no image)'
+        default: 'false'
+        required: false
+        type: boolean
+
+permissions: write-all
+
+jobs:
+  config:
+    name: ${{ matrix.CONFIG }}
+    strategy:
+      fail-fast: false
+      matrix:
+        CONFIG: [IPQ60XX-WIFI-YES, IPQ60XX-WIFI-NO, IPQ807X-WIFI-YES, IPQ807X-WIFI-NO]
+        SOURCE: [VIKINGYFY/immortalwrt]
+        BRANCH: [main]
+
+    uses: ./.github/workflows/WRT-CORE.yml
+    with:
+      WRT_CONFIG: ${{ matrix.CONFIG }}
+      WRT_THEME: aurora
+      WRT_NAME: OWRT
+      WRT_SSID: OWRT
+      WRT_WORD: 12345678
+      WRT_IP: 192.168.10.1
+      WRT_PW: 无
+      WRT_REPO: https://github.com/${{ matrix.SOURCE }}.git
+      WRT_BRANCH: ${{ matrix.BRANCH }}
+      WRT_SOURCE: ${{ matrix.SOURCE }}
+      WRT_PACKAGE: ${{ inputs.PACKAGE }}
+      WRT_TEST: ${{ inputs.TEST }}

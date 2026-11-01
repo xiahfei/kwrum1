@@ -1,0 +1,68 @@
+# SPDX-License-Identifier: MIT
+# Copyright (C) 2026 kwrum1
+#
+# QCA-PPE: Qualcommax IPQ60xx / IPQ807x + Qualcommbe IPQ53xx on the mainline
+# PPE path.
+#
+# Source: VIKINGYFY/immortalwrt@owrt -- the same branch and the same Config/*.txt
+# files upstream uses in its own QCA-ALL workflow, so a device list change there
+# is picked up here by copying the config.
+#
+# IPQ53xx / IPQ95xx are not built yet. Their device profiles require
+# kmod-ath12k, but the generated package config hides that kmod on qualcommbe
+# (`depends on !(TARGET_qualcommbe) || TARGET_qualcommax`), so image assembly
+# stops with "unable to select packages: kmod-ath12k (no such package)".
+# Config/IPQ53XX.txt and Config/IPQ95XX.txt stay in the repo; put them back in
+# the matrix once upstream lifts that restriction.
+#
+# The NSS-firmware counterpart is QCA-NSS (IPQ95xx, branch main).
+# The eBPF datapath (this repo's ebpf/) is X86/ROCKCHIP only and is never
+# installed on these targets; their acceleration is kernel flow offloading.
+
+name: QCA-PPE
+
+on:
+  # 自动编译：Auto-Clean 跑完后（与上游一致的“清理 -> 编译”链）
+  workflow_run:
+    workflows: ["Auto-Clean"]
+    types:
+      - completed
+  # 手动编译
+  workflow_dispatch:
+    inputs:
+      PACKAGE:
+        description: 'Extra package lines for .config'
+        required: false
+        type: string
+      TEST:
+        description: 'Config-only run (no image)'
+        default: 'false'
+        required: false
+        type: boolean
+
+permissions: write-all
+
+jobs:
+  config:
+    name: ${{ matrix.CONFIG }}
+    strategy:
+      fail-fast: false
+      matrix:
+        CONFIG: [IPQ60XX-WIFI-YES, IPQ60XX-WIFI-NO, IPQ807X-WIFI-YES, IPQ807X-WIFI-NO]
+        SOURCE: [VIKINGYFY/immortalwrt]
+        BRANCH: [owrt]
+
+    uses: ./.github/workflows/WRT-CORE.yml
+    with:
+      WRT_CONFIG: ${{ matrix.CONFIG }}
+      WRT_THEME: aurora
+      WRT_NAME: OWRT
+      WRT_SSID: OWRT
+      WRT_WORD: 12345678
+      WRT_IP: 192.168.10.1
+      WRT_PW: 无
+      WRT_REPO: https://github.com/${{ matrix.SOURCE }}.git
+      WRT_BRANCH: ${{ matrix.BRANCH }}
+      WRT_SOURCE: ${{ matrix.SOURCE }}
+      WRT_PACKAGE: ${{ inputs.PACKAGE }}
+      WRT_TEST: ${{ inputs.TEST }}
