@@ -37,7 +37,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        CONFIG: [MEDIATEK-WIFI-YES, MEDIATEK-WIFI-NO]
+        CONFIG: [MEDIATEK-WIFI-YES]
         SOURCE: [VIKINGYFY/immortalwrt]
         BRANCH: [owrt]
 
