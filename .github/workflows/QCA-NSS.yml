@@ -52,10 +52,10 @@ jobs:
     with:
       WRT_CONFIG: ${{ matrix.CONFIG }}
       WRT_THEME: aurora
-      WRT_NAME: Levie
-      WRT_SSID: OWRT
+      WRT_NAME: ATHEROS
+      WRT_SSID: ATHEROS
       WRT_WORD: 12345678
-      WRT_IP: 10.11.11.1
+      WRT_IP: 10.0.0.1
       WRT_PW: 无
       WRT_REPO: https://github.com/${{ matrix.SOURCE }}.git
       WRT_BRANCH: ${{ matrix.BRANCH }}
