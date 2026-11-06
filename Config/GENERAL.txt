@@ -6,6 +6,7 @@ CONFIG_PACKAGE_router-acl=y
 CONFIG_PACKAGE_router-qos=n
 CONFIG_PACKAGE_router-tuning=y
 CONFIG_PACKAGE_luci-app-gecoosac=y
+CONFIG_PACKAGE_luci-app-partexp=y
 CONFIG_PACKAGE_odhcpd=y
 CONFIG_PACKAGE_tc-bpf=y
 #增加插件
